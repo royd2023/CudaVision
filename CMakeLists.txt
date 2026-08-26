@@ -23,6 +23,7 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 add_library(cudavision STATIC
     src/grayscale.cu
     src/blur.cu
+    src/matrixmul.cu
 )
 
 # Public include directory.
@@ -47,6 +48,10 @@ add_executable(blur_example
     examples/blur_example.cpp
 )
 
+add_executable(matrixmul_example
+    examples/matrixmul_example.cpp
+)
+
 target_include_directories(grayscale_example
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/stb
@@ -63,6 +68,11 @@ target_link_libraries(grayscale_example
 )
 
 target_link_libraries(blur_example
+    PRIVATE
+        cudavision
+)
+
+target_link_libraries(matrixmul_example
     PRIVATE
         cudavision
 )
