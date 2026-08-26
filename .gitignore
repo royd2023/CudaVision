@@ -1,0 +1,33 @@
+# CMake build directories and generated files
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.cmake
+
+# Visual Studio and other IDE files
+.vs/
+*.suo
+*.user
+*.vcxproj.user
+
+# Compiled artifacts
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.exp
+*.ilk
+*.pdb
+*.exe
+
+# Generated example images
+images/**/output*.png
+
+# OS/editor files
+.DS_Store
+Thumbs.db
