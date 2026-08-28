@@ -5,7 +5,7 @@
 #include <vector>
 
 int main() {
-    int n = 100;
+    int n = 10000;
 
     // The CUDA API expects contiguous float buffers.
     std::vector<float> M(n * n);
@@ -25,17 +25,26 @@ int main() {
 
     // warmup
     cvgpu::matrixmul(M.data(), N.data(), P.data(), n);
+    cvgpu::matrixmulTiled(M.data(), N.data(), P.data(), n);
 
     // timed runs
     auto start = std::chrono::high_resolution_clock::now();
     cvgpu::matrixmul(M.data(), N.data(), P.data(), n);
     auto end = std::chrono::high_resolution_clock::now();
-    double grayscaleMilliseconds =
+    double matrixmulMilliseconds =
+        std::chrono::duration<double, std::milli>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
+    cvgpu::matrixmulTiled(M.data(), N.data(), P.data(), n);
+    end = std::chrono::high_resolution_clock::now();
+    double matrixmulTiledMilliseconds =
         std::chrono::duration<double, std::milli>(end - start).count();
 
     std::cout << "Unoptimized kernel: "
-              << grayscaleMilliseconds << " ms\n";
-  
+              << matrixmulMilliseconds << " ms\n";
+    std::cout << "Tiled kernel: "
+              << matrixmulTiledMilliseconds << " ms\n";
+    
 
     return 0;
 }
