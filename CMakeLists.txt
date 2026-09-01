@@ -28,6 +28,7 @@ add_library(cudavision STATIC
     src/grayscale.cu
     src/blur.cu
     src/matrixmul.cu
+    src/convolution.cu
 )
 
 # Public include directory.
@@ -56,6 +57,10 @@ add_executable(matrixmul_example
     examples/matrixmul_example.cpp
 )
 
+add_executable(convolution_example
+    examples/convolution_example.cpp
+)
+
 target_include_directories(grayscale_example
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/stb
@@ -77,6 +82,11 @@ target_link_libraries(blur_example
 )
 
 target_link_libraries(matrixmul_example
+    PRIVATE
+        cudavision
+)
+
+target_link_libraries(convolution_example
     PRIVATE
         cudavision
 )
