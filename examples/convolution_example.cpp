@@ -38,6 +38,7 @@ int main(int argc, char* argv[]) {
 
     // warmup
     cvgpu::convolution_2D_basic(M.data(), F.data(), P.data(), r, n, n);
+    cvgpu::convolution_2D_const_mem(M.data(), P.data(), r, n, n);
 
     // timed runs
     auto start = std::chrono::high_resolution_clock::now();
@@ -46,10 +47,17 @@ int main(int argc, char* argv[]) {
     double convolutionMilliseconds =
         std::chrono::duration<double, std::milli>(end - start).count();
 
-    
+    start = std::chrono::high_resolution_clock::now();
+    cvgpu::convolution_2D_const_mem(M.data(), P.data(), r, n, n);
+    end = std::chrono::high_resolution_clock::now();
+    double convolutionConstMilliseconds =
+        std::chrono::duration<double, std::milli>(end - start).count();
+
     std::cout << "Unoptimized kernel: "
               << convolutionMilliseconds << " ms\n";
-    
+
+    std::cout << "Kernel using constant memory: "
+              << convolutionConstMilliseconds << " ms\n";
 
     return 0;
 }

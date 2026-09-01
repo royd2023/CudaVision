@@ -4,6 +4,8 @@
 #include <cstdlib>
 
 #define TILE_WIDTH 16
+#define FILTER_RADIUS 3
+#define FILTER_SIZE (2 * FILTER_RADIUS + 1)
 
 #define CUDA_CHECK(call)                                             \
     do {                                                             \
@@ -16,6 +18,8 @@
             std::exit(EXIT_FAILURE);                                 \
         }                                                            \
     } while (0)
+
+__constant__ float F[FILTER_SIZE * FILTER_SIZE];
 
 __global__ void convolution_2D_basic_kernel
 (
@@ -50,6 +54,38 @@ __global__ void convolution_2D_basic_kernel
     output[outRow*width + outCol] = Pvalue;
 }
 
+__global__ void convolution_2D_const_mem_kernel
+(
+    float *input,
+    float *output,
+    int radius,
+    int width,
+    int height
+)
+{
+    int outCol = blockIdx.x*blockDim.x + threadIdx.x;
+    int outRow = blockIdx.y*blockDim.y + threadIdx.y;
+
+    if (outCol >= width || outRow >= height) return; 
+
+    float Pvalue = 0.0f;
+
+    for (int fRow = 0; fRow < 2*radius+1; fRow++)
+    {
+        for (int fCol = 0; fCol < 2*radius+1; fCol++)
+        {
+            int inRow = outRow - radius + fRow;
+            int inCol = outCol - radius + fCol;
+
+            if (inRow >= 0 && inRow < height && inCol >= 0 && inCol < width)
+            {
+                Pvalue += F[fRow * FILTER_SIZE + fCol] * input[inRow * width + inCol];
+            }
+        }
+    }
+    output[outRow*width + outCol] = Pvalue;
+}
+
 void runConvolution
 (
     float *input,
@@ -58,7 +94,8 @@ void runConvolution
     int radius,
     int width,
     int height,
-    bool tiled
+    bool tiled,
+    bool using_const
 )
 {
     size_t size = static_cast<size_t>(width) * height * sizeof(float);
@@ -67,16 +104,23 @@ void runConvolution
     // GPU allocation
     float* input_d;
     float* output_d;
-    float* filter_d;
-    
+    float* filter_d = nullptr;
+
     // GPU allocation
     CUDA_CHECK(cudaMalloc(&input_d, size));
     CUDA_CHECK(cudaMalloc(&output_d, size));
-    CUDA_CHECK(cudaMalloc(&filter_d, filter_size));
 
     // cudaMemcpy
     CUDA_CHECK(cudaMemcpy(input_d, input, size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(filter_d, filter, filter_size, cudaMemcpyHostToDevice));
+    if (using_const)
+    {
+        CUDA_CHECK(cudaMemcpyToSymbol(F, filter, filter_size));
+    }
+    else
+    {
+        CUDA_CHECK(cudaMalloc(&filter_d, filter_size));
+        CUDA_CHECK(cudaMemcpy(filter_d, filter, filter_size, cudaMemcpyHostToDevice));
+    }
 
 
     // kernel launch
@@ -86,14 +130,10 @@ void runConvolution
         (width + BLOCK_SIZE - 1) / BLOCK_SIZE, 
         (height + BLOCK_SIZE - 1) / BLOCK_SIZE
     );
-    
-    if (tiled)
+
+    if (using_const)
     {
-        // (tiled version not implemented yet – clean up and return)
-        CUDA_CHECK(cudaFree(input_d));
-        CUDA_CHECK(cudaFree(output_d));
-        CUDA_CHECK(cudaFree(filter_d));
-        return;
+        convolution_2D_const_mem_kernel<<<gridDim, blockDim>>>(input_d, output_d, radius, width, height);
     }
     else
     {
@@ -113,7 +153,10 @@ void runConvolution
     // free memory
     CUDA_CHECK(cudaFree(input_d));
     CUDA_CHECK(cudaFree(output_d));
-    CUDA_CHECK(cudaFree(filter_d));
+    if (filter_d != nullptr)
+    {
+        CUDA_CHECK(cudaFree(filter_d));
+    }
 }
 
 void cvgpu::convolution_2D_basic(
@@ -125,6 +168,17 @@ void cvgpu::convolution_2D_basic(
     int height
 )
 {
-    runConvolution(input, filter, output, radius, width, height, false);
+    runConvolution(input, filter, output, radius, width, height, false, false);
+}
+
+void cvgpu::convolution_2D_const_mem(
+    float *input,
+    float *output,
+    int radius,
+    int width,
+    int height
+)
+{
+    runConvolution(input, F, output, radius, width, height, false, true);
 }
 
