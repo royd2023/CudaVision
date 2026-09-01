@@ -31,3 +31,6 @@ images/**/output*.png
 # OS/editor files
 .DS_Store
 Thumbs.db
+
+# reports from Nsight Systems or Compute
+reports/

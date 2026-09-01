@@ -2,10 +2,15 @@
 #include <chrono>
 #include <cudavision/matrixmul.hpp>
 #include <random>
+#include <string>
 #include <vector>
 
-int main() {
-    int n = 10000;
+int main(int argc, char* argv[]) {
+    int n = argc > 1 ? std::stoi(argv[1]) : 1024;
+    if (n <= 0) {
+        std::cerr << "Matrix width must be positive.\n";
+        return 1;
+    }
 
     // The CUDA API expects contiguous float buffers.
     std::vector<float> M(n * n);
