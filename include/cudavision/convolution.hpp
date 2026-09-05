@@ -2,6 +2,8 @@
 
 namespace cvgpu
 {
+    void uploadConvolutionFilter(const float *filter);
+
     void convolution_2D_basic
     (
         float *input,

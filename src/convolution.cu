@@ -6,6 +6,9 @@
 #define TILE_WIDTH 16
 #define FILTER_RADIUS 3
 #define FILTER_SIZE (2 * FILTER_RADIUS + 1)
+#define IN_TILE_DIM 32
+#define OUT_TILE_DIM ((IN_TILE_DIM) - 2 * (FILTER_RADIUS))
+#define TILE_DIM 32
 
 #define CUDA_CHECK(call)                                             \
     do {                                                             \
@@ -20,6 +23,13 @@
     } while (0)
 
 __constant__ float F[FILTER_SIZE * FILTER_SIZE];
+__constant__ float F_c[2*FILTER_RADIUS+1][2*FILTER_RADIUS+1];
+
+void cvgpu::uploadConvolutionFilter(const float *filter)
+{
+    CUDA_CHECK(cudaMemcpyToSymbol(F, filter, sizeof(F)));
+    CUDA_CHECK(cudaMemcpyToSymbol(F_c, filter, sizeof(F_c)));
+}
 
 __global__ void convolution_2D_basic_kernel
 (
@@ -86,6 +96,110 @@ __global__ void convolution_2D_const_mem_kernel
     output[outRow*width + outCol] = Pvalue;
 }
 
+__global__ void convolution_tiled_2D_const_mem_kernel
+(
+    float *input,
+    float *output,
+    int width,
+    int height
+)
+{
+    int col = blockIdx.x*OUT_TILE_DIM + threadIdx.x - FILTER_RADIUS;
+    int row = blockIdx.y*OUT_TILE_DIM + threadIdx.y - FILTER_RADIUS;
+
+    // loading input tile
+    __shared__ float input_shared[IN_TILE_DIM][IN_TILE_DIM];
+    if (row >= 0 && row<height && col >= 0 && col < width)
+    {
+        input_shared[threadIdx.y][threadIdx.x] = input[row*width + col];
+    }
+    else
+    {
+        input_shared[threadIdx.y][threadIdx.x] = 0.0f;
+    }
+    __syncthreads();
+
+    // calculating output elements
+    int tileCol = threadIdx.x - FILTER_RADIUS;
+    int tileRow = threadIdx.y - FILTER_RADIUS;
+
+    // turning off the threads at the edges of the block
+    if (col >= 0 && col < width && row >= 0 && row < height)
+    {
+        if (tileCol >= 0 && tileCol < OUT_TILE_DIM && tileRow >=0 && tileRow < OUT_TILE_DIM)
+        {
+            float Pvalue = 0.0f;
+            for (int fRow = 0; fRow < 2*FILTER_RADIUS + 1; fRow++)
+            {
+                for (int fCol = 0; fCol < 2*FILTER_RADIUS + 1; fCol++)
+                {
+                    Pvalue += F_c[fRow][fCol]*input_shared[tileRow+fRow][tileCol+fCol];
+                }
+            }
+            output[row*width+col] = Pvalue;
+        }
+    }
+}
+
+__global__ void convolution_cached_tiled_2D_const_mem
+(
+    float *input,
+    float *output,
+    int width,
+    int height
+)
+{
+    int col = blockIdx.x*TILE_DIM + threadIdx.x;
+    int row = blockIdx.y*TILE_DIM + threadIdx.y;
+
+    // loading input tile
+    __shared__ float input_shared[TILE_DIM][TILE_DIM];
+    if (row >= 0 && row<height && col >= 0 && col < width)
+    {
+        input_shared[threadIdx.y][threadIdx.x] = input[row*width + col];
+    }
+    else
+    {
+        input_shared[threadIdx.y][threadIdx.x] = 0.0f;
+    }
+    __syncthreads();
+
+    // calculating output elements
+    // turning off the threads at the edges of the block
+    if (col < width && row < height)
+    {
+        float Pvalue = 0.0f;
+        for (int fRow = 0; fRow < 2*FILTER_RADIUS+1; fRow++)
+        {
+            for (int fCol = 0; fCol < 2*FILTER_RADIUS+1; fCol++)
+            {
+                if (threadIdx.x-FILTER_RADIUS+fCol >= 0 &&
+                    threadIdx.x-FILTER_RADIUS+fCol < TILE_DIM &&
+                    threadIdx.y-FILTER_RADIUS+fRow >= 0 &&
+                    threadIdx.y-FILTER_RADIUS+fRow < TILE_DIM)
+                {
+                    Pvalue += F_c[fRow][fCol] * input_shared[
+                        threadIdx.y - FILTER_RADIUS + fRow
+                    ][
+                        threadIdx.x - FILTER_RADIUS + fCol
+                    ];
+                }
+                else
+                {
+                    if (row-FILTER_RADIUS+fRow >= 0 &&
+                        row-FILTER_RADIUS+fRow < height &&
+                        col-FILTER_RADIUS+fCol >= 0 &&
+                        col-FILTER_RADIUS+fCol < width)
+                    {
+                        Pvalue += F_c[fRow][fCol]*input[(row-FILTER_RADIUS+fRow)*width+col-FILTER_RADIUS+fCol];
+                    }
+                }
+            }
+        }
+        output[row*width+col] = Pvalue;
+    }
+}
+
 void runConvolution
 (
     float *input,
@@ -95,7 +209,8 @@ void runConvolution
     int width,
     int height,
     bool tiled,
-    bool using_const
+    bool using_const,
+    bool cached
 )
 {
     size_t size = static_cast<size_t>(width) * height * sizeof(float);
@@ -112,32 +227,65 @@ void runConvolution
 
     // cudaMemcpy
     CUDA_CHECK(cudaMemcpy(input_d, input, size, cudaMemcpyHostToDevice));
-    if (using_const)
-    {
-        CUDA_CHECK(cudaMemcpyToSymbol(F, filter, filter_size));
-    }
-    else
+    if (!tiled && !using_const)
     {
         CUDA_CHECK(cudaMalloc(&filter_d, filter_size));
         CUDA_CHECK(cudaMemcpy(filter_d, filter, filter_size, cudaMemcpyHostToDevice));
     }
 
-
-    // kernel launch
     constexpr int BLOCK_SIZE = 16;
-    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridDim(
-        (width + BLOCK_SIZE - 1) / BLOCK_SIZE, 
-        (height + BLOCK_SIZE - 1) / BLOCK_SIZE
-    );
+    // kernel launch
+    dim3 blockDim;
+    dim3 gridDim;
 
-    if (using_const)
+    if (cached)
     {
-        convolution_2D_const_mem_kernel<<<gridDim, blockDim>>>(input_d, output_d, radius, width, height);
+        blockDim = dim3(TILE_DIM, TILE_DIM);
+        gridDim = dim3(
+            (width + TILE_DIM - 1) / TILE_DIM,
+            (height + TILE_DIM - 1) / TILE_DIM
+        );
+    }
+    else if (tiled)
+    {
+        blockDim = dim3(IN_TILE_DIM, IN_TILE_DIM);
+        gridDim = dim3(
+            (width + OUT_TILE_DIM - 1) / OUT_TILE_DIM,
+            (height + OUT_TILE_DIM - 1) / OUT_TILE_DIM
+        );
     }
     else
     {
-        convolution_2D_basic_kernel<<<gridDim, blockDim>>>(input_d, filter_d, output_d, radius, width, height);
+        blockDim = dim3(BLOCK_SIZE, BLOCK_SIZE);
+        gridDim = dim3(
+            (width + BLOCK_SIZE - 1) / BLOCK_SIZE,
+            (height + BLOCK_SIZE - 1) / BLOCK_SIZE
+        );
+    }
+
+    if (cached)
+    {
+        convolution_cached_tiled_2D_const_mem<<<gridDim, blockDim>>>(
+            input_d, output_d, width, height
+        );
+    }
+    else if (tiled)
+    {
+        convolution_tiled_2D_const_mem_kernel<<<gridDim, blockDim>>>(
+            input_d, output_d, width, height
+        );
+    }
+    else if (using_const)
+    {
+        convolution_2D_const_mem_kernel<<<gridDim, blockDim>>>(
+            input_d, output_d, radius, width, height
+        );
+    }
+    else
+    {
+        convolution_2D_basic_kernel<<<gridDim, blockDim>>>(
+            input_d, filter_d, output_d, radius, width, height
+        );
     }
     
 
@@ -168,7 +316,7 @@ void cvgpu::convolution_2D_basic(
     int height
 )
 {
-    runConvolution(input, filter, output, radius, width, height, false, false);
+    runConvolution(input, filter, output, radius, width, height, false, false, false);
 }
 
 void cvgpu::convolution_2D_const_mem(
@@ -179,6 +327,25 @@ void cvgpu::convolution_2D_const_mem(
     int height
 )
 {
-    runConvolution(input, F, output, radius, width, height, false, true);
+    runConvolution(input, nullptr, output, radius, width, height, false, true, false);
 }
 
+void cvgpu::convolution_tiled_2D_const_mem(
+    float *input,
+    float *output,
+    int width,
+    int height
+)
+{
+    runConvolution(input, nullptr, output, FILTER_RADIUS, width, height, true, true, false);
+}
+
+void cvgpu::convolution_cached_tiled_2D_const_mem(
+    float *input,
+    float *output,
+    int width,
+    int height
+)
+{
+    runConvolution(input, nullptr, output, FILTER_RADIUS, width, height, false, true, true);
+}

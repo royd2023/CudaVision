@@ -23,8 +23,7 @@ int main(int argc, char* argv[]) {
         F[i] = 2.0f;
     }
 
-    // Initialize the matrix and filter
-    // TODO: replace with std:
+    cvgpu::uploadConvolutionFilter(F.data());
 
     // Set up a random number generator
     std::random_device rd;
@@ -39,6 +38,9 @@ int main(int argc, char* argv[]) {
     // warmup
     cvgpu::convolution_2D_basic(M.data(), F.data(), P.data(), r, n, n);
     cvgpu::convolution_2D_const_mem(M.data(), P.data(), r, n, n);
+    cvgpu::convolution_tiled_2D_const_mem(M.data(), P.data(), n, n);
+    cvgpu::convolution_cached_tiled_2D_const_mem(M.data(), P.data(), n, n);
+
 
     // timed runs
     auto start = std::chrono::high_resolution_clock::now();
@@ -53,11 +55,29 @@ int main(int argc, char* argv[]) {
     double convolutionConstMilliseconds =
         std::chrono::duration<double, std::milli>(end - start).count();
 
+    start = std::chrono::high_resolution_clock::now();
+    cvgpu::convolution_tiled_2D_const_mem(M.data(), P.data(), n, n);
+    end = std::chrono::high_resolution_clock::now();
+    double convolutionTiledConstMilliseconds =
+        std::chrono::duration<double, std::milli>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
+    cvgpu::convolution_cached_tiled_2D_const_mem(M.data(), P.data(), n, n);
+    end = std::chrono::high_resolution_clock::now();
+    double convolutionCachedTiledConstMilliseconds =
+        std::chrono::duration<double, std::milli>(end - start).count();
+
     std::cout << "Unoptimized kernel: "
               << convolutionMilliseconds << " ms\n";
 
     std::cout << "Kernel using constant memory: "
               << convolutionConstMilliseconds << " ms\n";
+
+    std::cout << "Kernel using tiled constant memory: "
+              << convolutionTiledConstMilliseconds << " ms\n";
+
+    std::cout << "Kernel using cached tiled constant memory: "
+              << convolutionCachedTiledConstMilliseconds << " ms\n";
 
     return 0;
 }
